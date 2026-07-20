@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ledger — Invoice & Quote Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<!-- Firebase (compat SDK — plain <script> tags, no build step needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- No firebase-storage: Cloud Storage needs the paid Blaze plan. The logo is
+     instead resized to a small thumbnail and stored directly inside the
+     Firestore document as a data URL, which stays on the free Spark plan. -->
+<style>
+  :root{
+    --paper:#FBFAF5; --paper-line:#E4DFD1; --ink:#22283A; --ink-soft:#5B6275;
+    --brass:#7A6C3F; --brass-dark:#5E5330; --ledger-red:#8B3A3A; --card:#FFFFFF; --radius:4px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);background-image:linear-gradient(var(--paper-line) 1px, transparent 1px);background-size:100% 2.1em;color:var(--ink);font-family:'Inter',sans-serif;min-height:100vh;}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 20px 80px;}
+  header.top{display:flex;align-items:baseline;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:6px;flex-wrap:wrap;gap:10px;}
+  header.top h1{font-family:'Source Serif 4',serif;font-weight:700;font-size:1.9rem;margin:0;}
+  header.top .tag{font-family:'IBM Plex Mono',monospace;font-size:0.72rem;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.12em;}
+  .user-strip{display:flex;align-items:center;gap:12px;font-size:0.82rem;color:var(--ink-soft);}
+  .user-strip img{width:26px;height:26px;border-radius:50%;}
+  nav.tabs{display:flex;gap:2px;margin:22px 0 0;flex-wrap:wrap;}
+  nav.tabs button{font-family:'IBM Plex Mono',monospace;font-size:0.76rem;letter-spacing:0.05em;text-transform:uppercase;background:transparent;border:1px solid var(--ink);border-bottom:none;padding:9px 14px;cursor:pointer;color:var(--ink-soft);border-radius:var(--radius) var(--radius) 0 0;position:relative;top:1px;}
+  nav.tabs button.active{background:var(--card);color:var(--ink);font-weight:600;border-bottom:1px solid var(--card);}
+  .panel{background:var(--card);border:1px solid var(--ink);border-radius:0 0 var(--radius) var(--radius);padding:26px;box-shadow:0 2px 0 rgba(34,40,58,0.04);}
+  .panel h2{font-family:'Source Serif 4',serif;font-size:1.15rem;margin:0 0 4px;}
+  .hint{color:var(--ink-soft);font-size:0.85rem;margin:0 0 18px;line-height:1.55;}
+  .hint code{background:var(--paper-line);padding:1px 5px;border-radius:3px;font-family:'IBM Plex Mono',monospace;font-size:0.82em;}
+  .grid{display:grid;gap:14px;}
+  .grid.cols-2{grid-template-columns:1fr 1fr;}
+  .grid.cols-3{grid-template-columns:1fr 1fr 1fr;}
+  @media (max-width:680px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr;}}
+  label{display:block;font-size:0.72rem;font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin-bottom:5px;}
+  input,select,textarea{width:100%;font-family:'Inter',sans-serif;font-size:0.92rem;padding:9px 10px;border:1px solid #C9C3AF;border-radius:var(--radius);background:#fff;color:var(--ink);}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--brass);outline-offset:1px;}
+  .field{margin-bottom:14px;}
+  .btn{font-family:'IBM Plex Mono',monospace;font-size:0.78rem;letter-spacing:0.04em;text-transform:uppercase;padding:10px 18px;border-radius:var(--radius);border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;}
+  .btn:hover{background:var(--brass-dark);border-color:var(--brass-dark);}
+  .btn.ghost{background:transparent;color:var(--ink);}
+  .btn.ghost:hover{background:var(--paper-line);}
+  .btn.brass{background:var(--brass);border-color:var(--brass-dark);}
+  .btn.brass:hover{background:var(--brass-dark);}
+  .btn.danger{background:transparent;color:var(--ledger-red);border-color:var(--ledger-red);}
+  .btn.danger:hover{background:var(--ledger-red);color:#fff;}
+  .btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .row-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;}
+  table{width:100%;border-collapse:collapse;margin-top:6px;}
+  th{text-align:left;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);padding:8px;border-bottom:1px solid var(--ink);}
+  td{padding:8px;border-bottom:1px solid var(--paper-line);vertical-align:middle;}
+  td.num,th.num{text-align:right;font-family:'IBM Plex Mono',monospace;}
+  .items-table td{padding:6px 8px;}
+  .items-table select,.items-table input{padding:7px 8px;font-size:0.88rem;}
+  .qty-input{width:64px;text-align:right;}
+  .price-input{width:96px;text-align:right;}
+  .remove-line{background:none;border:none;color:var(--ledger-red);cursor:pointer;font-size:1.1rem;line-height:1;padding:2px 6px;}
+  .totals{margin-top:16px;display:flex;justify-content:flex-end;}
+  .totals table{width:280px;}
+  .totals td{border-bottom:none;padding:5px 8px;}
+  .totals tr.grand td{font-weight:700;font-size:1.05rem;border-top:2px solid var(--ink);border-bottom:3px double var(--ledger-red);color:var(--ledger-red);padding-top:10px;}
+  .badge{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:0.66rem;text-transform:uppercase;letter-spacing:0.06em;border:1px solid var(--ink);border-radius:2px;padding:2px 7px;color:var(--ink-soft);}
+  .badge.Draft{border-color:#999;color:#777;}
+  .badge.Sent{border-color:var(--brass-dark);color:var(--brass-dark);}
+  .badge.Paid{border-color:#3C5E33;color:#3C5E33;}
+  .badge.Overdue{border-color:var(--ledger-red);color:var(--ledger-red);}
+  .status-msg{margin-top:14px;font-size:0.85rem;font-family:'IBM Plex Mono',monospace;padding:9px 12px;border-radius:var(--radius);display:none;}
+  .status-msg.show{display:block;}
+  .status-msg.ok{background:#EEF3EA;color:#3C5E33;border:1px solid #B9CBA9;}
+  .status-msg.err{background:#F6E9E9;color:var(--ledger-red);border:1px solid #D9B3B3;}
+  .status-msg.info{background:#EFEEE6;color:var(--ink-soft);border:1px solid var(--paper-line);}
+  .history-item{display:flex;justify-content:space-between;align-items:center;padding:11px 4px;border-bottom:1px solid var(--paper-line);font-size:0.88rem;gap:12px;flex-wrap:wrap;}
+  .history-item .meta{color:var(--ink-soft);font-size:0.78rem;font-family:'IBM Plex Mono',monospace;}
+  .empty{color:var(--ink-soft);font-size:0.88rem;padding:20px 4px;text-align:center;font-style:italic;}
+  hr.rule{border:none;border-top:1px solid var(--paper-line);margin:22px 0;}
+  .logo-preview{width:88px;height:88px;object-fit:contain;border:1px solid var(--paper-line);border-radius:var(--radius);background:#fff;}
+  /* Auth screen */
+  #authScreen{max-width:420px;margin:80px auto;}
+  #authScreen .panel{padding:32px;}
+  .auth-toggle{display:flex;gap:8px;margin-bottom:18px;}
+  .auth-toggle button{flex:1;padding:8px;font-family:'IBM Plex Mono',monospace;font-size:0.76rem;text-transform:uppercase;border:1px solid var(--ink);background:transparent;cursor:pointer;border-radius:var(--radius);}
+  .auth-toggle button.active{background:var(--ink);color:var(--paper);}
+  #app{display:none;}
+</style>
+</head>
+<body>
+
+<div id="authScreen" class="wrap">
+  <header class="top" style="border:none;margin-bottom:18px;">
+    <h1>Ledger</h1><span class="tag">Invoices &amp; Quotes</span>
+  </header>
+  <div class="panel">
+    <div class="auth-toggle">
+      <button id="showLogin" class="active">Log in</button>
+      <button id="showSignup">Sign up</button>
+    </div>
+    <div class="field"><label>Email</label><input id="authEmail" type="email" placeholder="you@company.com"></div>
+    <div class="field"><label>Password</label><input id="authPassword" type="password" placeholder="••••••••"></div>
+    <div class="field" id="signupExtra" style="display:none;">
+      <label>Business / your name</label><input id="authBizName" placeholder="Acme Ltd">
+    </div>
+    <button class="btn" id="authSubmitBtn" style="width:100%;">Log in</button>
+    <hr class="rule">
+    <button class="btn ghost" id="googleSignInBtn" style="width:100%;">Continue with Google</button>
+    <div class="status-msg" id="authStatus"></div>
+  </div>
+</div>
+
+<div class="wrap" id="app">
+
+  <header class="top">
+    <h1>Ledger</h1>
+    <div class="user-strip">
+      <img id="userAvatar" src="" style="display:none;">
+      <span id="userLabel"></span>
+      <button class="btn ghost" id="logoutBtn" style="padding:6px 12px;">Log out</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="new">New Document</button>
+    <button class="tab-btn" data-tab="catalog">Item Catalog</button>
+    <button class="tab-btn" data-tab="clients">Clients</button>
+    <button class="tab-btn" data-tab="history">History</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- NEW DOCUMENT -->
+  <section class="panel" id="tab-new">
+    <h2>Create a document</h2>
+    <p class="hint">Pick a saved client or type a new one. Pick items from your catalog — price fills in automatically, quantity × price calculates per line.</p>
+
+    <div class="grid cols-3">
+      <div class="field"><label>Document type</label><select id="docType"><option value="Quote">Quote</option><option value="Invoice">Invoice</option></select></div>
+      <div class="field"><label>Document number</label><input id="docNumber" readonly></div>
+      <div class="field"><label>Date</label><input id="docDate" type="date"></div>
+    </div>
+
+    <div class="field"><label>Saved client</label><select id="savedClientSelect"><option value="">— New / custom client —</option></select></div>
+    <div class="grid cols-3">
+      <div class="field"><label>Client type</label><select id="clientType"><option value="Individual">Individual</option><option value="Company">Company</option></select></div>
+      <div class="field"><label>Client / Company name</label><input id="clientName" placeholder="e.g. Thandiwe Nkosi or Acme Ltd"></div>
+      <div class="field"><label>Client email</label><input id="clientEmail" type="email" placeholder="client@example.com"></div>
+    </div>
+    <div class="grid cols-3">
+      <div class="field"><label>Client WhatsApp number (with country code)</label><input id="clientPhone" placeholder="e.g. 27821234567"></div>
+      <div class="field"><label>Notes (optional)</label><input id="docNotes" placeholder="e.g. Payment due within 7 days"></div>
+      <div class="field" style="align-self:end;"><label style="visibility:hidden;">save</label><label style="display:flex;align-items:center;gap:6px;font-family:'Inter';text-transform:none;font-size:0.85rem;"><input type="checkbox" id="saveClientCheck" style="width:auto;"> Save this client for next time</label></div>
+    </div>
+
+    <hr class="rule">
+
+    <table class="items-table">
+      <thead><tr><th style="width:36%">Item</th><th style="width:22%">Description</th><th class="num" style="width:10%">Qty</th><th class="num" style="width:14%">Price</th><th class="num" style="width:14%">Total</th><th style="width:2%"></th></tr></thead>
+      <tbody id="lineItemsBody"></tbody>
+    </table>
+    <button class="btn ghost" id="addLineBtn" style="margin-top:8px;">+ Add line</button>
+
+    <div class="totals">
+      <table>
+        <tr><td>Subtotal</td><td class="num amount" id="subtotalCell">0.00</td></tr>
+        <tr><td>Tax <input id="taxRate" type="number" min="0" step="0.1" value="0" style="width:56px;display:inline-block;margin-left:6px;padding:3px 5px;font-size:0.8rem;">%</td><td class="num amount" id="taxCell">0.00</td></tr>
+        <tr class="grand"><td>Total</td><td class="num amount" id="totalCell">0.00</td></tr>
+      </table>
+    </div>
+
+    <div class="row-actions">
+      <button class="btn" id="savePdfBtn">Generate &amp; Save PDF</button>
+      <button class="btn brass" id="sendEmailBtn">Send to client's email</button>
+      <button class="btn ghost" id="sendWhatsBtn">Share via WhatsApp</button>
+    </div>
+    <div class="status-msg" id="statusMsg"></div>
+  </section>
+
+  <!-- CATALOG -->
+  <section class="panel" id="tab-catalog" style="display:none;">
+    <h2>Item catalog</h2>
+    <p class="hint">Add every product or service you sell once, with its price. On a document, selecting the item auto-fills the price.</p>
+    <table><thead><tr><th style="width:45%">Item name</th><th style="width:20%">Default description</th><th class="num" style="width:15%">Price</th><th style="width:20%"></th></tr></thead><tbody id="catalogBody"></tbody></table>
+    <button class="btn ghost" id="addCatalogBtn" style="margin-top:12px;">+ Add item</button>
+    <div class="status-msg" id="catalogStatus"></div>
+  </section>
+
+  <!-- CLIENTS -->
+  <section class="panel" id="tab-clients" style="display:none;">
+    <h2>Clients</h2>
+    <p class="hint">Save clients once and reuse them from the dropdown on a new document.</p>
+    <table><thead><tr><th style="width:25%">Name</th><th style="width:15%">Type</th><th style="width:25%">Email</th><th style="width:20%">Phone</th><th style="width:15%"></th></tr></thead><tbody id="clientsBody"></tbody></table>
+    <button class="btn ghost" id="addClientBtn" style="margin-top:12px;">+ Add client</button>
+    <div class="status-msg" id="clientsStatus"></div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="panel" id="tab-history" style="display:none;">
+    <h2>History</h2>
+    <p class="hint">Every generated document is stored in your account (Firestore) so it's available on any device you log in from. Update the status as things progress.</p>
+    <div id="historyList"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="panel" id="tab-settings" style="display:none;">
+    <h2>Your business details</h2>
+    <p class="hint">These appear on every document you generate.</p>
+
+    <div class="field">
+      <label>Logo</label>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <img id="logoPreview" class="logo-preview" src="" style="display:none;">
+        <div>
+          <input type="file" id="logoFile" accept="image/png,image/jpeg">
+          <div class="hint" style="margin:6px 0 0;">PNG or JPG, square works best. Uploaded to your account's private storage.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="field"><label>Business name</label><input id="bizName" placeholder="Your company name"></div>
+      <div class="field"><label>Business email</label><input id="bizEmail" type="email" placeholder="you@business.com"></div>
+    </div>
+    <div class="grid cols-2">
+      <div class="field"><label>Business phone</label><input id="bizPhone" placeholder="+27 ..."></div>
+      <div class="field"><label>Currency symbol</label><select id="currencySymbol"><option value="R">R (South African Rand)</option><option value="$">$ (Dollar)</option><option value="£">£ (Pound)</option><option value="€">€ (Euro)</option></select></div>
+    </div>
+    <div class="field"><label>Business address</label><textarea id="bizAddress" rows="2" placeholder="Street, city, postal code"></textarea></div>
+
+    <hr class="rule">
+
+    <h2>Auto-send email (EmailJS + your Gmail)</h2>
+    <p class="hint">
+      A web page can't log in to Gmail directly, so this uses <strong>EmailJS</strong> to bridge the connection. Each company sets up its own EmailJS account so emails send from their own Gmail:<br>
+      1. Free account at <a href="https://www.emailjs.com" target="_blank">emailjs.com</a>.<br>
+      2. Add an Email Service → Gmail → connect your Gmail. Copy the <code>Service ID</code>.<br>
+      3. Create a Template with variables <code>to_email</code>, <code>client_name</code>, <code>doc_type</code>, <code>doc_number</code>, <code>total</code>, <code>business_name</code>, and an attachment field <code>pdf_attachment</code>. Copy the <code>Template ID</code>.<br>
+      4. Account → General → copy your <code>Public Key</code>.
+    </p>
+    <div class="grid cols-3">
+      <div class="field"><label>EmailJS Service ID</label><input id="ejsService" placeholder="service_xxxxxxx"></div>
+      <div class="field"><label>EmailJS Template ID</label><input id="ejsTemplate" placeholder="template_xxxxxxx"></div>
+      <div class="field"><label>EmailJS Public Key</label><input id="ejsPublicKey" placeholder="public key"></div>
+    </div>
+
+    <div class="row-actions"><button class="btn" id="saveSettingsBtn">Save settings</button></div>
+    <div class="status-msg" id="settingsStatus"></div>
+  </section>
+
+</div>
+
+<script>
+/* =========================================================================
+   FIREBASE CONFIG — replace with YOUR project's config (Firebase console →
+   Project settings → General → Your apps → Web app). See SETUP.md.
+   ========================================================================= */
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyAZC-KUGlGG3oojXDbDpZsyVjyGjbxqD5Y",
+  authDomain: "nv-generator.firebaseapp.com",
+  projectId: "nv-generator",
+  storageBucket: "nv-generator.firebasestorage.app",
+  messagingSenderId: "594263772032",
+  appId: "1:594263772032:web:3677d5a6f224eb84ed8f65",
+  measurementId: "G-Q5BQG37J7Q"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ---------- state ---------- */
+let uid = null;
+let catalog = [];      // [{id, name, desc, price}]
+let clients = [];      // [{id, name, type, email, phone}]
+let history_ = [];     // [{id, number, type, client, total, date, fileName, status}]
+let settings = { businessName:'', businessEmail:'', businessPhone:'', businessAddress:'', currency:'R', logoURL:'', ejsService:'', ejsTemplate:'', ejsPublicKey:'', docCounter:1 };
+let logoDataUrl = null;
+
+/* ---------- auth screen wiring ---------- */
+let authMode = 'login';
+document.getElementById('showLogin').addEventListener('click', ()=>{ authMode='login'; toggleAuthMode(); });
+document.getElementById('showSignup').addEventListener('click', ()=>{ authMode='signup'; toggleAuthMode(); });
+function toggleAuthMode(){
+  document.getElementById('showLogin').classList.toggle('active', authMode==='login');
+  document.getElementById('showSignup').classList.toggle('active', authMode==='signup');
+  document.getElementById('signupExtra').style.display = authMode==='signup' ? 'block':'none';
+  document.getElementById('authSubmitBtn').textContent = authMode==='signup' ? 'Sign up' : 'Log in';
+}
+document.getElementById('authSubmitBtn').addEventListener('click', async ()=>{
+  const email = document.getElementById('authEmail').value.trim();
+  const pw = document.getElementById('authPassword').value;
+  if(!email || !pw){ showStatus('authStatus','Enter an email and password.','err'); return; }
+  try{
+    if(authMode==='signup'){
+      const cred = await auth.createUserWithEmailAndPassword(email, pw);
+      const bizName = document.getElementById('authBizName').value.trim();
+      await db.collection('users').doc(cred.user.uid).set({ businessName: bizName, businessEmail: email, currency:'R', docCounter:1 }, {merge:true});
+    } else {
+      await auth.signInWithEmailAndPassword(email, pw);
+    }
+  }catch(e){ showStatus('authStatus', e.message, 'err'); }
+});
+document.getElementById('googleSignInBtn').addEventListener('click', async ()=>{
+  try{
+    const provider = new firebase.auth.GoogleAuthProvider();
+    const cred = await auth.signInWithPopup(provider);
+    const docRef = db.collection('users').doc(cred.user.uid);
+    const snap = await docRef.get();
+    if(!snap.exists){ await docRef.set({ businessName: cred.user.displayName||'', businessEmail: cred.user.email||'', currency:'R', docCounter:1 }, {merge:true}); }
+  }catch(e){ showStatus('authStatus', e.message, 'err'); }
+});
+document.getElementById('logoutBtn').addEventListener('click', ()=> auth.signOut());
+
+/* ---------- auth state ---------- */
+auth.onAuthStateChanged(async (user)=>{
+  if(user){
+    uid = user.uid;
+    document.getElementById('authScreen').style.display='none';
+    document.getElementById('app').style.display='block';
+    document.getElementById('userLabel').textContent = user.email || user.displayName || '';
+    if(user.photoURL){ document.getElementById('userAvatar').src = user.photoURL; document.getElementById('userAvatar').style.display='inline-block'; }
+    await loadAllUserData();
+  } else {
+    uid = null;
+    document.getElementById('authScreen').style.display='block';
+    document.getElementById('app').style.display='none';
+  }
+});
+
+/* ---------- load everything from Firestore on login ---------- */
+async function loadAllUserData(){
+  const userDoc = await db.collection('users').doc(uid).get();
+  settings = Object.assign(settings, userDoc.data() || {});
+  loadSettingsForm();
+
+  const catSnap = await db.collection('users').doc(uid).collection('catalog').get();
+  catalog = catSnap.docs.map(d=>({id:d.id, ...d.data()}));
+  if(catalog.length===0){
+    // seed a couple of example items for a brand-new account
+    const seed = [{name:'Consultation (1 hour)', desc:'Professional consultation', price:500}, {name:'Service', desc:'General service', price:0}];
+    for(const s of seed){ const ref = await db.collection('users').doc(uid).collection('catalog').add(s); catalog.push({id:ref.id, ...s}); }
+  }
+
+  const cliSnap = await db.collection('users').doc(uid).collection('clients').get();
+  clients = cliSnap.docs.map(d=>({id:d.id, ...d.data()}));
+
+  const histSnap = await db.collection('users').doc(uid).collection('documents').orderBy('createdAt','desc').limit(100).get();
+  history_ = histSnap.docs.map(d=>({id:d.id, ...d.data()}));
+
+  populateItemDropdowns();
+  populateClientDropdown();
+  refreshDocNumber();
+  renderCatalog(); renderClients(); renderHistory();
+}
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('#app .panel').forEach(p=>p.style.display='none');
+    document.getElementById('tab-'+btn.dataset.tab).style.display='block';
+    if(btn.dataset.tab==='catalog') renderCatalog();
+    if(btn.dataset.tab==='clients') renderClients();
+    if(btn.dataset.tab==='history') renderHistory();
+    if(btn.dataset.tab==='settings') loadSettingsForm();
+  });
+});
+
+/* ---------- settings ---------- */
+function loadSettingsForm(){
+  bizName.value=settings.businessName||''; bizEmail.value=settings.businessEmail||'';
+  bizPhone.value=settings.businessPhone||''; bizAddress.value=settings.businessAddress||'';
+  currencySymbol.value=settings.currency||'R';
+  ejsService.value=settings.ejsService||''; ejsTemplate.value=settings.ejsTemplate||''; ejsPublicKey.value=settings.ejsPublicKey||'';
+  if(settings.logoURL){ logoPreview.src = settings.logoURL; logoPreview.style.display='block'; }
+}
+const bizName=document.getElementById('bizName'), bizEmail=document.getElementById('bizEmail'),
+      bizPhone=document.getElementById('bizPhone'), bizAddress=document.getElementById('bizAddress'),
+      currencySymbol=document.getElementById('currencySymbol'), ejsService=document.getElementById('ejsService'),
+      ejsTemplate=document.getElementById('ejsTemplate'), ejsPublicKey=document.getElementById('ejsPublicKey'),
+      logoPreview=document.getElementById('logoPreview');
+
+document.getElementById('saveSettingsBtn').addEventListener('click', async ()=>{
+  const data = {
+    businessName:bizName.value, businessEmail:bizEmail.value, businessPhone:bizPhone.value, businessAddress:bizAddress.value,
+    currency:currencySymbol.value, ejsService:ejsService.value, ejsTemplate:ejsTemplate.value, ejsPublicKey:ejsPublicKey.value
+  };
+  await db.collection('users').doc(uid).set(data, {merge:true});
+  settings = Object.assign(settings, data);
+  showStatus('settingsStatus','Settings saved to your account.','ok');
+});
+
+document.getElementById('logoFile').addEventListener('change', async (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  showStatus('settingsStatus','Processing logo…','info');
+  try{
+    const dataUrl = await resizeImageToDataUrl(file, 200, 200); // small thumbnail, keeps it well under Firestore's 1MB doc limit
+    await db.collection('users').doc(uid).set({logoURL:dataUrl}, {merge:true});
+    settings.logoURL = dataUrl; logoDataUrl = dataUrl;
+    logoPreview.src = dataUrl; logoPreview.style.display='block';
+    showStatus('settingsStatus','Logo saved.','ok');
+  }catch(err){ showStatus('settingsStatus','Logo processing failed: '+err.message,'err'); }
+});
+
+// Resizes an image file to fit within maxW x maxH (preserving aspect ratio)
+// and returns it as a compact base64 data URL — no external storage needed.
+function resizeImageToDataUrl(file, maxW, maxH){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (ev)=>{ img.onload = ()=>{
+      let w = img.width, h = img.height;
+      const scale = Math.min(maxW/w, maxH/h, 1);
+      w = Math.round(w*scale); h = Math.round(h*scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      // PNG keeps transparency for logos; quality param is ignored for PNG but harmless
+      resolve(canvas.toDataURL('image/png'));
+    }; img.onerror = reject; img.src = ev.target.result; };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ---------- catalog ---------- */
+function renderCatalog(){
+  const body = document.getElementById('catalogBody');
+  body.innerHTML = '';
+  catalog.forEach((item)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input value="${escapeHtml(item.name)}" data-field="name"></td>
+      <td><input value="${escapeHtml(item.desc||'')}" data-field="desc"></td>
+      <td class="num"><input type="number" step="0.01" value="${item.price}" data-field="price" style="text-align:right;"></td>
+      <td><button class="btn danger" style="padding:6px 10px;">Remove</button></td>`;
+    tr.querySelectorAll('input').forEach(inp=>{
+      inp.addEventListener('change', async ()=>{
+        item[inp.dataset.field] = inp.dataset.field==='price' ? parseFloat(inp.value||0) : inp.value;
+        await db.collection('users').doc(uid).collection('catalog').doc(item.id).update({[inp.dataset.field]: item[inp.dataset.field]});
+        populateItemDropdowns();
+      });
+    });
+    tr.querySelector('.btn.danger').addEventListener('click', async ()=>{
+      await db.collection('users').doc(uid).collection('catalog').doc(item.id).delete();
+      catalog = catalog.filter(c=>c.id!==item.id);
+      renderCatalog(); populateItemDropdowns();
+    });
+    body.appendChild(tr);
+  });
+}
+document.getElementById('addCatalogBtn').addEventListener('click', async ()=>{
+  const ref = await db.collection('users').doc(uid).collection('catalog').add({name:'New item', desc:'', price:0});
+  catalog.push({id:ref.id, name:'New item', desc:'', price:0});
+  renderCatalog(); populateItemDropdowns();
+  showStatus('catalogStatus','Item added — edit the name and price.','info');
+});
+
+/* ---------- clients ---------- */
+function renderClients(){
+  const body = document.getElementById('clientsBody');
+  body.innerHTML = '';
+  clients.forEach((c)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input value="${escapeHtml(c.name||'')}" data-field="name"></td>
+      <td><select data-field="type"><option value="Individual" ${c.type==='Individual'?'selected':''}>Individual</option><option value="Company" ${c.type==='Company'?'selected':''}>Company</option></select></td>
+      <td><input value="${escapeHtml(c.email||'')}" data-field="email"></td>
+      <td><input value="${escapeHtml(c.phone||'')}" data-field="phone"></td>
+      <td><button class="btn danger" style="padding:6px 10px;">Remove</button></td>`;
+    tr.querySelectorAll('input,select').forEach(inp=>{
+      inp.addEventListener('change', async ()=>{
+        c[inp.dataset.field] = inp.value;
+        await db.collection('users').doc(uid).collection('clients').doc(c.id).update({[inp.dataset.field]: inp.value});
+        populateClientDropdown();
+      });
+    });
+    tr.querySelector('.btn.danger').addEventListener('click', async ()=>{
+      await db.collection('users').doc(uid).collection('clients').doc(c.id).delete();
+      clients = clients.filter(x=>x.id!==c.id);
+      renderClients(); populateClientDropdown();
+    });
+    body.appendChild(tr);
+  });
+}
+document.getElementById('addClientBtn').addEventListener('click', async ()=>{
+  const ref = await db.collection('users').doc(uid).collection('clients').add({name:'New client', type:'Individual', email:'', phone:''});
+  clients.push({id:ref.id, name:'New client', type:'Individual', email:'', phone:''});
+  renderClients(); populateClientDropdown();
+  showStatus('clientsStatus','Client added — edit their details.','info');
+});
+function populateClientDropdown(){
+  const sel = document.getElementById('savedClientSelect');
+  sel.innerHTML = '<option value="">— New / custom client —</option>' + clients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
+document.getElementById('savedClientSelect').addEventListener('change', (e)=>{
+  if(!e.target.value){ return; }
+  const c = clients.find(x=>x.id===e.target.value);
+  if(c){
+    document.getElementById('clientName').value = c.name||'';
+    document.getElementById('clientType').value = c.type||'Individual';
+    document.getElementById('clientEmail').value = c.email||'';
+    document.getElementById('clientPhone').value = c.phone||'';
+  }
+});
+
+/* ---------- line items ---------- */
+function addLine(){
+  const tr = document.createElement('tr');
+  const options = catalog.map((c,i)=>`<option value="${i}">${escapeHtml(c.name)}</option>`).join('');
+  tr.innerHTML = `
+    <td><select class="item-select"><option value="custom">Custom item...</option>${options}</select></td>
+    <td><input class="desc-input" placeholder="Description"></td>
+    <td class="num"><input class="qty-input" type="number" min="1" step="1" value="1"></td>
+    <td class="num"><input class="price-input" type="number" min="0" step="0.01" value="0"></td>
+    <td class="num amount line-total">0.00</td>
+    <td><button class="remove-line" title="Remove line">×</button></td>`;
+  document.getElementById('lineItemsBody').appendChild(tr);
+  const itemSelect = tr.querySelector('.item-select'), descInput = tr.querySelector('.desc-input'),
+        qtyInput = tr.querySelector('.qty-input'), priceInput = tr.querySelector('.price-input');
+  itemSelect.addEventListener('change', ()=>{
+    if(itemSelect.value !== 'custom'){ const item = catalog[+itemSelect.value]; descInput.value = item.desc || item.name; priceInput.value = item.price; }
+    recalcLine(tr);
+  });
+  [qtyInput, priceInput].forEach(inp=>inp.addEventListener('input', ()=>recalcLine(tr)));
+  tr.querySelector('.remove-line').addEventListener('click', ()=>{ tr.remove(); recalcTotals(); });
+  recalcLine(tr);
+}
+function recalcLine(tr){
+  const qty = parseFloat(tr.querySelector('.qty-input').value||0);
+  const price = parseFloat(tr.querySelector('.price-input').value||0);
+  tr.querySelector('.line-total').textContent = (qty*price).toFixed(2);
+  recalcTotals();
+}
+function recalcTotals(){
+  let subtotal = 0;
+  document.querySelectorAll('#lineItemsBody tr').forEach(tr=>{ subtotal += parseFloat(tr.querySelector('.line-total').textContent||0); });
+  const taxRate = parseFloat(document.getElementById('taxRate').value||0);
+  const tax = subtotal * (taxRate/100);
+  document.getElementById('subtotalCell').textContent = subtotal.toFixed(2);
+  document.getElementById('taxCell').textContent = tax.toFixed(2);
+  document.getElementById('totalCell').textContent = (subtotal+tax).toFixed(2);
+}
+document.getElementById('taxRate').addEventListener('input', recalcTotals);
+document.getElementById('addLineBtn').addEventListener('click', addLine);
+function populateItemDropdowns(){
+  document.querySelectorAll('.item-select').forEach(sel=>{
+    const current = sel.value;
+    sel.innerHTML = `<option value="custom">Custom item...</option>` + catalog.map((c,i)=>`<option value="${i}">${escapeHtml(c.name)}</option>`).join('');
+    sel.value = current;
+  });
+}
+
+/* ---------- doc number / date ---------- */
+function refreshDocNumber(){
+  const prefix = document.getElementById('docType').value === 'Invoice' ? 'INV' : 'QTE';
+  document.getElementById('docNumber').value = `${prefix}-${String(settings.docCounter||1).padStart(4,'0')}`;
+}
+document.getElementById('docType').addEventListener('change', refreshDocNumber);
+document.getElementById('docDate').valueAsDate = new Date();
+addLine();
+
+/* ---------- helpers ---------- */
+function escapeHtml(str){ return String(str).replace(/[&<>"']/g, s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+function showStatus(elId, msg, type){ const el = document.getElementById(elId); el.textContent = msg; el.className = 'status-msg show ' + type; }
+function collectDoc(){
+  const lines = [];
+  document.querySelectorAll('#lineItemsBody tr').forEach(tr=>{
+    lines.push({ desc: tr.querySelector('.desc-input').value || '(item)', qty: parseFloat(tr.querySelector('.qty-input').value||0),
+      price: parseFloat(tr.querySelector('.price-input').value||0), total: parseFloat(tr.querySelector('.line-total').textContent||0) });
+  });
+  return {
+    type: document.getElementById('docType').value, number: document.getElementById('docNumber').value, date: document.getElementById('docDate').value,
+    clientType: document.getElementById('clientType').value, clientName: document.getElementById('clientName').value,
+    clientEmail: document.getElementById('clientEmail').value, clientPhone: document.getElementById('clientPhone').value,
+    notes: document.getElementById('docNotes').value, lines,
+    subtotal: document.getElementById('subtotalCell').textContent, tax: document.getElementById('taxCell').textContent,
+    taxRate: document.getElementById('taxRate').value, total: document.getElementById('totalCell').textContent
+  };
+}
+function validateDoc(doc){
+  if(!doc.clientName){ return 'Add the client or company name first.'; }
+  if(doc.lines.length === 0 || doc.lines.every(l=>!l.desc)){ return 'Add at least one item line.'; }
+  return null;
+}
+async function fetchLogoDataUrl(){
+  if(!settings.logoURL) return null;
+  // logoURL is already a data: URL stored in Firestore — nothing to fetch.
+  if(settings.logoURL.startsWith('data:')) return settings.logoURL;
+  // fallback in case an old/external URL is ever present
+  if(logoDataUrl) return logoDataUrl;
+  try{
+    const res = await fetch(settings.logoURL);
+    const blob = await res.blob();
+    logoDataUrl = await new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(blob); });
+  }catch(e){ logoDataUrl = null; }
+  return logoDataUrl;
+}
+
+/* ---------- PDF ---------- */
+async function buildPdf(doc){
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ unit:'pt', format:'a4' });
+  const cur = settings.currency || 'R';
+  let y = 56;
+  const logo = await fetchLogoDataUrl();
+  let textX = 48;
+  if(logo){ try{ pdf.addImage(logo, 'PNG', 48, 40, 56, 56); textX = 116; }catch(e){} }
+
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(20);
+  pdf.text(settings.businessName || 'Your Business', textX, y);
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(90);
+  y += 16;
+  if(settings.businessAddress){ pdf.text(settings.businessAddress, textX, y); y += 12; }
+  if(settings.businessEmail){ pdf.text(settings.businessEmail, textX, y); y += 12; }
+  if(settings.businessPhone){ pdf.text(settings.businessPhone, textX, y); y += 12; }
+
+  pdf.setTextColor(20); pdf.setFont('helvetica','bold'); pdf.setFontSize(16);
+  pdf.text(doc.type.toUpperCase(), 545, 56, {align:'right'});
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(10);
+  pdf.text(`No: ${doc.number}`, 545, 74, {align:'right'});
+  pdf.text(`Date: ${doc.date}`, 545, 88, {align:'right'});
+
+  y = Math.max(y, 108) + 18;
+  pdf.setDrawColor(34,40,58); pdf.setLineWidth(1); pdf.line(48, y, 545, y); y += 20;
+
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(10); pdf.text(`Billed to (${doc.clientType}):`, 48, y); y += 14;
+  pdf.setFont('helvetica','normal'); pdf.text(doc.clientName || '-', 48, y); y += 13;
+  if(doc.clientEmail){ pdf.text(doc.clientEmail, 48, y); y += 13; }
+
+  y += 16;
+  pdf.setFillColor(34,40,58); pdf.rect(48, y, 497, 20, 'F');
+  pdf.setTextColor(255); pdf.setFont('helvetica','bold'); pdf.setFontSize(9);
+  pdf.text('Description', 54, y+14); pdf.text('Qty', 380, y+14, {align:'right'});
+  pdf.text('Price', 460, y+14, {align:'right'}); pdf.text('Total', 540, y+14, {align:'right'});
+  y += 20;
+  pdf.setTextColor(20); pdf.setFont('helvetica','normal'); pdf.setFontSize(9.5);
+
+  doc.lines.forEach((line, i)=>{
+    y += 6;
+    if(i % 2 === 1){ pdf.setFillColor(247,245,238); pdf.rect(48, y-14, 497, 20, 'F'); }
+    pdf.text(String(line.desc), 54, y); pdf.text(String(line.qty), 380, y, {align:'right'});
+    pdf.text(cur + Number(line.price).toFixed(2), 460, y, {align:'right'});
+    pdf.text(cur + Number(line.total).toFixed(2), 540, y, {align:'right'});
+    y += 14;
+    if(y > 720){ pdf.addPage(); y = 60; }
+  });
+
+  y += 14; pdf.setDrawColor(200); pdf.line(340, y, 545, y); y += 16;
+  pdf.text('Subtotal', 460, y, {align:'right'}); pdf.text(cur+doc.subtotal, 540, y, {align:'right'}); y += 16;
+  pdf.text(`Tax (${doc.taxRate}%)`, 460, y, {align:'right'}); pdf.text(cur+doc.tax, 540, y, {align:'right'}); y += 18;
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(12); pdf.setTextColor(139,58,58);
+  pdf.text('Total', 460, y, {align:'right'}); pdf.text(cur+doc.total, 540, y, {align:'right'});
+  pdf.setTextColor(20);
+
+  if(doc.notes){ y += 34; pdf.setFont('helvetica','italic'); pdf.setFontSize(9); pdf.setTextColor(90); pdf.text('Note: ' + doc.notes, 48, y, {maxWidth:497}); }
+  return pdf;
+}
+
+async function persistDoc(doc, fileName, status){
+  const payload = { ...doc, fileName, status, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+  const ref = await db.collection('users').doc(uid).collection('documents').add(payload);
+  history_.unshift({id:ref.id, number:doc.number, type:doc.type, client:doc.clientName, total:doc.total, date:doc.date, fileName, status});
+  settings.docCounter = (settings.docCounter||1) + 1;
+  await db.collection('users').doc(uid).set({docCounter: settings.docCounter}, {merge:true});
+  refreshDocNumber();
+
+  if(document.getElementById('saveClientCheck').checked && doc.clientName){
+    const exists = clients.some(c=>c.name===doc.clientName);
+    if(!exists){
+      const cref = await db.collection('users').doc(uid).collection('clients').add({name:doc.clientName, type:doc.clientType, email:doc.clientEmail, phone:doc.clientPhone});
+      clients.push({id:cref.id, name:doc.clientName, type:doc.clientType, email:doc.clientEmail, phone:doc.clientPhone});
+      populateClientDropdown();
+    }
+  }
+}
+
+document.getElementById('savePdfBtn').addEventListener('click', async ()=>{
+  const doc = collectDoc();
+  const err = validateDoc(doc); if(err){ showStatus('statusMsg', err, 'err'); return; }
+  const pdf = await buildPdf(doc);
+  const fileName = `${doc.number}-${(doc.clientName||'client').replace(/\s+/g,'_')}.pdf`;
+  pdf.save(fileName);
+  await persistDoc(doc, fileName, 'Draft');
+  showStatus('statusMsg', `Saved "${fileName}" to your downloads and your account.`, 'ok');
+});
+
+document.getElementById('sendWhatsBtn').addEventListener('click', async ()=>{
+  const doc = collectDoc();
+  const err = validateDoc(doc); if(err){ showStatus('statusMsg', err, 'err'); return; }
+  const pdf = await buildPdf(doc);
+  const fileName = `${doc.number}-${(doc.clientName||'client').replace(/\s+/g,'_')}.pdf`;
+  pdf.save(fileName);
+  await persistDoc(doc, fileName, 'Sent');
+  const msg = encodeURIComponent(`Hi ${doc.clientName}, please find your ${doc.type.toLowerCase()} ${doc.number} for ${(settings.currency||'R')}${doc.total}. I've just downloaded the PDF (${fileName}) — attaching it here now.`);
+  const phone = (doc.clientPhone||'').replace(/[^0-9]/g,'');
+  window.open(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`, '_blank');
+  showStatus('statusMsg', `PDF saved as "${fileName}". WhatsApp is open — attach that file before sending (browsers can't auto-attach to WhatsApp).`, 'info');
+});
+
+document.getElementById('sendEmailBtn').addEventListener('click', async ()=>{
+  const doc = collectDoc();
+  const err = validateDoc(doc); if(err){ showStatus('statusMsg', err, 'err'); return; }
+  if(!doc.clientEmail){ showStatus('statusMsg', "Add the client's email address first.", 'err'); return; }
+  if(!settings.ejsService || !settings.ejsTemplate || !settings.ejsPublicKey){ showStatus('statusMsg', 'Set up EmailJS first — see the Settings tab.', 'err'); return; }
+  const btn = document.getElementById('sendEmailBtn'); btn.disabled = true; btn.textContent = 'Sending…';
+  try{
+    const pdf = await buildPdf(doc);
+    const fileName = `${doc.number}-${(doc.clientName||'client').replace(/\s+/g,'_')}.pdf`;
+    const pdfBase64 = pdf.output('datauristring').split(',')[1];
+    emailjs.init({ publicKey: settings.ejsPublicKey });
+    await emailjs.send(settings.ejsService, settings.ejsTemplate, {
+      to_email: doc.clientEmail, client_name: doc.clientName, doc_type: doc.type, doc_number: doc.number,
+      total: (settings.currency||'R') + doc.total, business_name: settings.businessName || '', pdf_attachment: pdfBase64, pdf_filename: fileName
+    });
+    pdf.save(fileName);
+    await persistDoc(doc, fileName, 'Sent');
+    showStatus('statusMsg', `Emailed to ${doc.clientEmail} and saved a copy as "${fileName}".`, 'ok');
+  }catch(e){
+    showStatus('statusMsg', 'Email failed to send: ' + (e && e.text ? e.text : e) + '. Check your EmailJS setup in Settings.', 'err');
+  }finally{ btn.disabled = false; btn.textContent = "Send to client's email"; }
+});
+
+/* ---------- history ---------- */
+function renderHistory(){
+  const el = document.getElementById('historyList');
+  if(history_.length === 0){ el.innerHTML = '<div class="empty">No documents yet — create one in "New Document".</div>'; return; }
+  el.innerHTML = '';
+  history_.forEach(h=>{
+    const row = document.createElement('div');
+    row.className = 'history-item';
+    row.innerHTML = `
+      <div><strong>${escapeHtml(h.number)}</strong> — ${escapeHtml(h.client)} <span class="badge ${h.type}">${escapeHtml(h.type)}</span></div>
+      <div class="meta">${escapeHtml(h.date)} · ${settings.currency||'R'}${escapeHtml(String(h.total))}</div>
+      <select class="status-select badge ${h.status}" style="width:auto;padding:3px 8px;">
+        ${['Draft','Sent','Paid','Overdue'].map(s=>`<option value="${s}" ${h.status===s?'selected':''}>${s}</option>`).join('')}
+      </select>`;
+    row.querySelector('.status-select').addEventListener('change', async (e)=>{
+      h.status = e.target.value;
+      await db.collection('users').doc(uid).collection('documents').doc(h.id).update({status:h.status});
+      e.target.className = 'status-select badge ' + h.status;
+    });
+    el.appendChild(row);
+  });
+}
+</script>
+</body>
+</html>
